@@ -73,6 +73,9 @@ RETRY_ATTEMPTS = max(1, _env_int("SAFEYE_RETRY_ATTEMPTS", 3))
 RETRY_BACKOFF = _env_float("SAFEYE_RETRY_BACKOFF", 2)
 MAX_WORKERS = max(1, _env_int("SAFEYE_MAX_WORKERS", 10))
 VERIFY_TLS = _env_bool("SAFEYE_VERIFY_TLS", True)
+VERSION = "1.0"
+DEFAULT_USER_AGENT = f"Safeye/{VERSION} (+https://github.com/rcpassos/safeye-script)"
+USER_AGENT = os.getenv("SAFEYE_USER_AGENT", DEFAULT_USER_AGENT)
 
 # Warn when a certificate expires within this many days (0 disables the check).
 TLS_WARN_DAYS = _env_int("SAFEYE_TLS_WARN_DAYS", 14)
@@ -223,6 +226,16 @@ def state_key(config):
     return f"{config['client']}::{config['project_name']}"
 
 
+def _request_headers(headers):
+    """Add Safeye's default User-Agent without mutating endpoint headers."""
+    merged = {name: value for name, value in headers.items() if name.lower() != "user-agent"}
+    merged["User-Agent"] = USER_AGENT
+    for name, value in headers.items():
+        if name.lower() == "user-agent":
+            merged["User-Agent"] = value
+    return merged
+
+
 def load_state(path=None):
     """Load the persisted up/down state, returning an empty state on any error."""
     path = path or STATE_FILE
@@ -318,7 +331,7 @@ def perform_check(config):
             response = requests.request(
                 method=config["http_method"],
                 url=config["endpoint"],
-                headers=config["headers"],
+                headers=_request_headers(config["headers"]),
                 json=config["body"],
                 timeout=REQUEST_TIMEOUT,
                 verify=VERIFY_TLS,
@@ -613,7 +626,7 @@ def send_heartbeat():
     if not HEARTBEAT_URL:
         return
     try:
-        requests.get(HEARTBEAT_URL, timeout=REQUEST_TIMEOUT)
+        requests.get(HEARTBEAT_URL, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
     except Exception as exc:
         print(f"Heartbeat ping failed: {exc}")
 

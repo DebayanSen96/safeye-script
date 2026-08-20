@@ -204,6 +204,30 @@ class TestPerformCheck(BaseTest):
         self.assertEqual(result.attempts, 1)
         request.assert_called_once()
         self.assertEqual(request.call_args.kwargs["method"], "GET")
+        self.assertEqual(
+            request.call_args.kwargs["headers"]["User-Agent"], safeye.DEFAULT_USER_AGENT
+        )
+
+    def test_user_agent_override_is_case_insensitive_and_does_not_mutate_config(self):
+        headers = {"Authorization": "Bearer token", "user-agent": "custom-agent"}
+        config = make_config(headers=headers)
+
+        with patch("safeye.requests.request", return_value=self.response(200)) as request:
+            result = perform_check(config)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(request.call_args.kwargs["headers"], {
+            "Authorization": "Bearer token",
+            "User-Agent": "custom-agent",
+        })
+        self.assertEqual(config["headers"], headers)
+
+    def test_environment_user_agent_override_is_used(self):
+        self.set_module(USER_AGENT="monitor.example/1.0")
+        with patch("safeye.requests.request", return_value=self.response(200)) as request:
+            perform_check(make_config())
+
+        self.assertEqual(request.call_args.kwargs["headers"]["User-Agent"], "monitor.example/1.0")
 
     def test_unexpected_status_is_a_failure(self):
         with patch("safeye.requests.request", return_value=self.response(503)):
@@ -736,6 +760,7 @@ class TestExecuteRequests(BaseTest):
 
         get.assert_called_once()
         self.assertEqual(get.call_args[0][0], "https://hc.example.com/ping")
+        self.assertEqual(get.call_args.kwargs["headers"]["User-Agent"], safeye.DEFAULT_USER_AGENT)
 
     def test_heartbeat_failure_does_not_break_the_cycle(self):
         self.set_module(HEARTBEAT_URL="https://hc.example.com/ping")
