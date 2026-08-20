@@ -10,10 +10,12 @@ database and needs no container: a Python interpreter and a spreadsheet.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import json
 import logging
 import os
+import signal
 import smtplib
 import socket
 import ssl
@@ -661,6 +663,25 @@ def execute_requests(config_path=None, state=None, dry_run=False):
     return {"total": len(request_configs), "down": down, "state": state}
 
 
+# --- Shutdown ----------------------------------------------------------------
+
+# Set by SIGTERM/SIGINT. The loop finishes the cycle it is in — killing a cycle
+# between the alert emails and save_state() would replay those alerts on restart.
+_shutdown = threading.Event()
+
+
+def _request_shutdown(signum, _frame):
+    _shutdown.set()
+    signal.signal(signum, signal.SIG_DFL)  # a second signal exits immediately
+
+
+def _install_signal_handlers():
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        # ValueError: not the main thread; the KeyboardInterrupt fallback still applies.
+        with contextlib.suppress(ValueError):
+            signal.signal(sig, _request_shutdown)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Safeye - HTTP endpoint monitor")
     parser.add_argument("--config", default=REQUESTS_CSV, help="path to the CSV config")
@@ -677,16 +698,19 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     state = load_state()
+    _shutdown.clear()
+    _install_signal_handlers()
     try:
-        while True:
+        while not _shutdown.is_set():
             started = time.monotonic()
             execute_requests(args.config, state, args.dry_run)
             if args.once:
                 return 0
-            time.sleep(max(0, args.interval - (time.monotonic() - started)))
+            _shutdown.wait(max(0, args.interval - (time.monotonic() - started)))
     except KeyboardInterrupt:
-        print("\nStopped.")
-        return 0
+        pass  # handler install failed, so SIGINT still raises rather than setting the flag
+    print("\nStopped.")
+    return 0
 
 
 if __name__ == "__main__":
