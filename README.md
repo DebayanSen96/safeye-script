@@ -62,7 +62,7 @@ Copy `requests.example.csv` to `requests.csv`. It is semicolon-separated, UTF-8,
 | `client` | no | Grouping label, shown in alerts. |
 | `project_name` | no | Names the log file and the alert. Must be unique per client. |
 | `endpoint` | **yes** | URL to request. Rows without one are skipped. |
-| `expected_http_status` | no | `200`, or a list like `200,204`. Defaults to `200`. |
+| `expected_http_status` | no | `200`, a list like `200,204`, or a wildcard like `2xx` (case-insensitive). Wildcards match every status in that class; values can be mixed. Defaults to `200`. |
 | `notify_emails` | no | Comma-separated. Empty means log-only. |
 | `body_json` | no | JSON request body. |
 | `headers_json` | no | JSON headers, e.g. `{"Authorization": "Bearer …"}`. |

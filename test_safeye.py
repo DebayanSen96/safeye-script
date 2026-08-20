@@ -10,6 +10,7 @@ import safeye
 from safeye import (
     EXPIRED,
     CheckResult,
+    ExpectedStatus,
     TlsProbe,
     _downtime,
     _humanize,
@@ -91,10 +92,45 @@ class TestHelpers(BaseTest):
         self.assertEqual(sanitize_filename("test123"), "test123")
 
     def test_parse_expected_status(self):
-        self.assertEqual(_parse_expected_status("200"), {200})
-        self.assertEqual(_parse_expected_status("200, 204"), {200, 204})
-        self.assertEqual(_parse_expected_status(""), {200})
-        self.assertEqual(_parse_expected_status("abc"), {200})
+        self.assertEqual(_parse_expected_status("200").codes, frozenset({200}))
+        self.assertEqual(_parse_expected_status("200, 204").codes, frozenset({200, 204}))
+        self.assertEqual(_parse_expected_status("").codes, frozenset({200}))
+        self.assertEqual(_parse_expected_status("abc").codes, frozenset({200}))
+
+    def test_parse_expected_status_wildcards(self):
+        expected = _parse_expected_status("2xx")
+        self.assertIsInstance(expected, ExpectedStatus)
+        self.assertTrue(all(code in expected for code in (200, 250, 299)))
+        self.assertNotIn(199, expected)
+        self.assertNotIn(300, expected)
+
+        expected = _parse_expected_status("2xx,3xx")
+        self.assertTrue(all(code in expected for code in (200, 302, 399)))
+        self.assertNotIn(400, expected)
+
+    def test_parse_expected_status_mixes_codes_and_wildcards(self):
+        expected = _parse_expected_status("200,5xx")
+        self.assertIn(200, expected)
+        self.assertIn(503, expected)
+        self.assertNotIn(404, expected)
+        self.assertEqual(expected.describe(), "200/5xx")
+
+    def test_parse_expected_status_is_case_insensitive(self):
+        expected = _parse_expected_status("2XX")
+        self.assertIn(204, expected)
+        self.assertEqual(expected.describe(), "2XX")
+
+    def test_parse_expected_status_skips_invalid_tokens(self):
+        with patch("builtins.print") as print_mock:
+            expected = _parse_expected_status("xx2,2x,abc,2xx")
+        self.assertIn(204, expected)
+        self.assertNotIn(404, expected)
+        self.assertEqual(print_mock.call_count, 3)
+
+    def test_parse_expected_status_all_invalid_defaults_to_200(self):
+        expected = _parse_expected_status("xx2,2x,abc")
+        self.assertEqual(expected.codes, frozenset({200}))
+        self.assertEqual(expected.describe(), "200")
 
     def test_humanize(self):
         self.assertEqual(_humanize(45), "45s")
@@ -132,7 +168,7 @@ class TestReadRequestsCsv(BaseTest):
         self.assertEqual(config["client"], "TestClient")
         self.assertEqual(config["project_name"], "TestProject")
         self.assertEqual(config["endpoint"], "http://example.com")
-        self.assertEqual(config["expected_http_status"], {200})
+        self.assertEqual(config["expected_http_status"].codes, frozenset({200}))
         self.assertEqual(config["notify_emails"], ["a@example.com", "b@example.com"])
         self.assertEqual(config["body"], {"key": "value"})
         self.assertEqual(config["headers"], {"Content-Type": "application/json"})
@@ -145,7 +181,7 @@ class TestReadRequestsCsv(BaseTest):
             "P;http://example.com;200,204\n"
         )
         (config,) = read_requests_csv(path)
-        self.assertEqual(config["expected_http_status"], {200, 204})
+        self.assertEqual(config["expected_http_status"].codes, frozenset({200, 204}))
 
     def test_malformed_rows_degrade_gracefully(self):
         path = self.write_csv(
@@ -169,7 +205,7 @@ class TestReadRequestsCsv(BaseTest):
         (config,) = read_requests_csv(path)
         self.assertEqual(config["project_name"], "default_project")
         self.assertEqual(config["http_method"], "GET")
-        self.assertEqual(config["expected_http_status"], {200})
+        self.assertEqual(config["expected_http_status"].codes, frozenset({200}))
         self.assertEqual(config["notify_emails"], [])
 
 
@@ -211,6 +247,23 @@ class TestPerformCheck(BaseTest):
 
         self.assertFalse(result.ok)
         self.assertIn("expected HTTP 200, got 503", result.error)
+
+    def test_wildcard_status_is_accepted(self):
+        with patch("safeye.requests.request", return_value=self.response(202)):
+            result = perform_check(
+                make_config(expected_http_status=_parse_expected_status("2xx"))
+            )
+
+        self.assertTrue(result.ok)
+
+    def test_wildcard_status_failure_message_is_readable(self):
+        with patch("safeye.requests.request", return_value=self.response(503)):
+            result = perform_check(
+                make_config(expected_http_status=_parse_expected_status("2xx"))
+            )
+
+        self.assertFalse(result.ok)
+        self.assertIn("expected HTTP 2xx, got 503", result.error)
 
     def test_slow_response_is_a_failure(self):
         with patch("safeye.requests.request", return_value=self.response(200)), patch(

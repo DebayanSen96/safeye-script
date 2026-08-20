@@ -14,6 +14,7 @@ import csv
 import json
 import logging
 import os
+import re
 import smtplib
 import socket
 import ssl
@@ -137,18 +138,63 @@ def get_logger(project_name, logs_dir=None):
 # --- Configuration file ------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class ExpectedStatus:
+    """Explicit HTTP codes and status classes accepted by an endpoint."""
+
+    codes: frozenset[int]
+    wildcard_classes: frozenset[int]
+    descriptions: tuple[str, ...]
+
+    def __contains__(self, status_code):
+        return status_code in self.codes or status_code // 100 in self.wildcard_classes
+
+    def describe(self):
+        return "/".join(self.descriptions)
+
+
+def _describe_expected_status(expected):
+    """Format expected statuses, including legacy set-based configurations."""
+    if isinstance(expected, ExpectedStatus):
+        return expected.describe()
+    return "/".join(str(code) for code in sorted(expected))
+
+
 def _parse_expected_status(raw):
-    """Parse '200' or '200,204' into a set of ints. Defaults to {200}."""
+    """Parse explicit codes and 2xx-style wildcards. Defaults to 200."""
     codes = set()
+    wildcard_classes = set()
+    descriptions = []
+    seen = set()
     for part in str(raw or "").split(","):
         part = part.strip()
         if not part:
             continue
+
+        wildcard = re.fullmatch(r"([1-5])[xX]{2}", part)
+        if wildcard:
+            key = ("class", int(wildcard.group(1)))
+            if key not in seen:
+                seen.add(key)
+                wildcard_classes.add(key[1])
+                descriptions.append(part)
+            continue
+
         try:
-            codes.add(int(part))
+            code = int(part)
         except ValueError:
             print(f"Ignoring invalid expected_http_status value: {part!r}")
-    return codes or {200}
+            continue
+        key = ("code", code)
+        if key not in seen:
+            seen.add(key)
+            codes.add(code)
+            descriptions.append(part)
+
+    if not descriptions:
+        codes = {200}
+        descriptions = ["200"]
+    return ExpectedStatus(frozenset(codes), frozenset(wildcard_classes), tuple(descriptions))
 
 
 def read_requests_csv(file_path):
@@ -156,7 +202,7 @@ def read_requests_csv(file_path):
     Read endpoint definitions from a semicolon-separated CSV file.
 
     Recognised columns: client, project_name, endpoint, expected_http_status
-    (single code or comma-separated list), notify_emails, body_json,
+    (single code, comma-separated list, or 2xx-style wildcard), notify_emails, body_json,
     headers_json, http_method, max_response_ms (optional).
     """
     request_configs = []
@@ -330,7 +376,7 @@ def perform_check(config):
             limit = config["max_response_ms"]
             if status_code not in expected:
                 error = (
-                    f"expected HTTP {'/'.join(str(c) for c in sorted(expected))}, "
+                    f"expected HTTP {_describe_expected_status(expected)}, "
                     f"got {status_code}"
                 )
             elif limit is not None and elapsed_ms > limit:
