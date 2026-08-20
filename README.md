@@ -88,6 +88,8 @@ python safeye.py --config other.csv --interval 60
 
 `--dry-run` is the right way to validate a new config: it exercises every check and shows exactly which alerts would have gone out. It leaves no trace — `state.json` is not written and the heartbeat is not pinged — so a dry run can't swallow the next real alert.
 
+**Stopping it.** In the long-running mode, `SIGTERM` (what `systemctl stop` and `docker stop` send) and `Ctrl-C` shut Safeye down gracefully: the cycle in flight runs to completion, `state.json` is written, and the process exits with code 0. Nothing is lost, so a restart won't re-send an alert you already received. A signal during the idle gap between cycles takes effect immediately rather than waiting out `SAFEYE_INTERVAL`. Send a second signal to exit right away, at the cost of losing the current cycle's state.
+
 **As a cron job** (state persists between runs, so alerting still works correctly):
 
 ```bash

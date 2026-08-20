@@ -1,7 +1,10 @@
 import logging
 import os
+import signal
 import ssl
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
@@ -862,37 +865,147 @@ class TestExecuteRequests(BaseTest):
             self.assertIn("OK GET http://up.example.com", handle.read())
 
 
-class TestMain(BaseTest):
+class MainTest(BaseTest):
+    """main() installs process-wide handlers; put the originals back afterwards."""
+
+    def setUp(self):
+        super().setUp()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            self.addCleanup(signal.signal, sig, signal.getsignal(sig))
+        self.addCleanup(safeye._shutdown.clear)
+
+
+class TestMain(MainTest):
     def test_once_runs_a_single_cycle(self):
-        with patch("safeye.execute_requests", return_value={}) as run, patch(
-            "safeye.time.sleep"
-        ) as sleep:
+        with patch("safeye.execute_requests", return_value={}) as run, patch.object(
+            safeye._shutdown, "wait"
+        ) as wait:
             exit_code = safeye.main(["--once", "--config", "requests.csv"])
 
         self.assertEqual(exit_code, 0)
         run.assert_called_once_with("requests.csv", {}, False)
-        sleep.assert_not_called()
+        wait.assert_not_called()
 
     def test_dry_run_flag_is_passed_through(self):
-        with patch("safeye.execute_requests", return_value={}) as run, patch(
-            "safeye.time.sleep"
+        with patch("safeye.execute_requests", return_value={}) as run, patch.object(
+            safeye._shutdown, "wait"
         ):
             safeye.main(["--once", "--dry-run"])
         self.assertTrue(run.call_args[0][2])
 
-    def test_loop_sleeps_between_cycles_until_interrupted(self):
+    def test_loop_waits_between_cycles_until_interrupted(self):
         with patch(
             "safeye.execute_requests", side_effect=[{}, KeyboardInterrupt]
-        ) as run, patch("safeye.time.sleep") as sleep:
+        ) as run, patch.object(safeye._shutdown, "wait") as wait:
             self.assertEqual(safeye.main(["--interval", "60"]), 0)
 
         self.assertEqual(run.call_count, 2)
-        sleep.assert_called_once()
-        self.assertLessEqual(sleep.call_args[0][0], 60)
+        wait.assert_called_once()
+        self.assertLessEqual(wait.call_args[0][0], 60)
 
     def test_keyboard_interrupt_exits_cleanly(self):
         with patch("safeye.execute_requests", side_effect=KeyboardInterrupt):
             self.assertEqual(safeye.main([]), 0)
+
+    def test_a_stale_shutdown_flag_does_not_block_the_first_cycle(self):
+        safeye._shutdown.set()
+        with patch("safeye.execute_requests", return_value={}) as run:
+            self.assertEqual(safeye.main(["--once"]), 0)
+        run.assert_called_once()
+
+
+class TestGracefulShutdown(MainTest):
+    """SIGTERM must drain the current cycle so the state it wrote survives."""
+
+    def write_csv(self, rows):
+        path = self.path("requests.csv")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("client;project_name;endpoint;expected_http_status;notify_emails\n")
+            handle.writelines(rows)
+        return path
+
+    def test_sigterm_stops_the_loop_after_the_running_cycle(self):
+        def cycle(*_args, **_kwargs):
+            os.kill(os.getpid(), signal.SIGTERM)
+            return {}
+
+        with patch("safeye.execute_requests", side_effect=cycle) as run:
+            self.assertEqual(safeye.main(["--interval", "0"]), 0)
+
+        run.assert_called_once()
+
+    def test_sigterm_mid_cycle_still_persists_the_transition(self):
+        path = self.write_csv(
+            ["Acme;Down Site;http://down.example.com;200;ops@example.com\n"]
+        )
+
+        def failing_check(config):
+            os.kill(os.getpid(), signal.SIGTERM)
+            return CheckResult(ok=False, error="boom", attempts=1)
+
+        with patch("safeye.perform_check", side_effect=failing_check), patch(
+            "safeye.send_email", return_value=True
+        ) as email:
+            self.assertEqual(safeye.main(["--config", path, "--interval", "3600"]), 0)
+
+        email.assert_called_once()
+        persisted = load_state(self.path("state.json"))
+        self.assertEqual(persisted["Acme::Down Site"]["status"], "down")
+
+    def test_no_duplicate_down_email_after_a_stop_and_restart(self):
+        path = self.write_csv(
+            ["Acme;Down Site;http://down.example.com;200;ops@example.com\n"]
+        )
+        killed = []
+
+        def failing_check(config):
+            if not killed:
+                killed.append(True)
+                os.kill(os.getpid(), signal.SIGTERM)
+            return CheckResult(ok=False, error="boom", attempts=1)
+
+        with patch("safeye.perform_check", side_effect=failing_check), patch(
+            "safeye.send_email", return_value=True
+        ) as email:
+            self.assertEqual(safeye.main(["--config", path, "--interval", "3600"]), 0)
+            self.assertEqual(safeye.main(["--config", path, "--once"]), 0)
+
+        email.assert_called_once()
+
+    def test_sigterm_during_the_idle_wait_returns_promptly(self):
+        cycles = []
+
+        def cycle(*_args, **_kwargs):
+            cycles.append(True)
+            if len(cycles) == 1:
+                threading.Timer(0.05, os.kill, (os.getpid(), signal.SIGTERM)).start()
+            return {}
+
+        started = time.monotonic()
+        with patch("safeye.execute_requests", side_effect=cycle):
+            self.assertEqual(safeye.main(["--interval", "3600"]), 0)
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(len(cycles), 1)
+        self.assertLess(elapsed, 5)  # the interval is 3600; a sleeping loop blows past this
+
+    def test_a_second_signal_is_left_to_the_default_handler(self):
+        with patch("safeye.signal.signal") as install:
+            with patch("safeye.execute_requests", return_value={}):
+                safeye.main(["--once"])
+            handler = install.call_args_list[0][0][1]
+            install.reset_mock()
+            handler(signal.SIGTERM, None)
+
+        self.assertTrue(safeye._shutdown.is_set())
+        install.assert_called_once_with(signal.SIGTERM, signal.SIG_DFL)
+
+    def test_handlers_are_skipped_outside_the_main_thread(self):
+        with patch("safeye.signal.signal", side_effect=ValueError), patch(
+            "safeye.execute_requests", return_value={}
+        ) as run:
+            self.assertEqual(safeye.main(["--once"]), 0)
+        run.assert_called_once()
 
 
 if __name__ == "__main__":
