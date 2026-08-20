@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import ssl
@@ -9,8 +8,9 @@ from unittest.mock import MagicMock, patch
 
 import safeye
 from safeye import (
-    CheckResult,
     EXPIRED,
+    CheckResult,
+    TlsProbe,
     _downtime,
     _humanize,
     _parse_expected_status,
@@ -18,13 +18,12 @@ from safeye import (
     execute_requests,
     load_state,
     perform_check,
+    probe_tls_expiry,
     read_requests_csv,
     sanitize_filename,
     save_state,
     send_email,
     state_key,
-    TlsProbe,
-    probe_tls_expiry,
 )
 
 

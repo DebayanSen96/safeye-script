@@ -1,5 +1,7 @@
 # Safeye — HTTP endpoint monitoring in one file
 
+[![Tests](https://github.com/rcpassos/safeye-script/actions/workflows/tests.yml/badge.svg)](https://github.com/rcpassos/safeye-script/actions/workflows/tests.yml)
+
 Safeye checks a list of HTTP endpoints on a schedule and emails you **when something changes** — not every time it looks. No database, no container, no dashboard: one Python file and a spreadsheet.
 
 ```bash
@@ -133,12 +135,23 @@ Rotation is handled by `RotatingFileHandler`, so disk usage is bounded without a
 python -m unittest test_safeye.py
 ```
 
-59 tests, 97% statement coverage — including every branch of the alerting state machine, retry exhaustion, alerts that fail to send and are retried, TLS expiry warnings, SMTP failure, and heartbeat failure. The 9 uncovered statements are environment-variable parsing fallbacks, the duplicate-key warning, one corrupt-timestamp guard, and the `__main__` line.
+63 tests, 98% statement coverage — including every branch of the alerting state machine, retry exhaustion, alerts that fail to send and are retried, TLS expiry warnings, SMTP failure, and heartbeat failure. The 9 uncovered statements are environment-variable parsing fallbacks, the duplicate-key warning, one corrupt-timestamp guard, and the `__main__` line.
 
 ```bash
 pip install coverage
 coverage run --source=safeye -m unittest test_safeye.py && coverage report -m
 ```
+
+Linting uses [Ruff](https://docs.astral.sh/ruff/), configured in `pyproject.toml`. It is a dev-only
+tool and is deliberately not in `requirements.txt`:
+
+```bash
+pip install ruff && ruff check .
+```
+
+CI runs the suite on every push to `main` and every pull request across Python 3.10–3.13 on Linux
+plus 3.12 on macOS, and enforces a 95% coverage floor. See
+[`.github/workflows/tests.yml`](.github/workflows/tests.yml).
 
 ## Scope
 

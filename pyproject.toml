@@ -1,0 +1,8 @@
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# BLE is deliberately not selected: Safeye catches broad exceptions around
+# network, TLS and SMTP calls so one bad endpoint can never take down a cycle.
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]

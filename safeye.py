@@ -162,7 +162,7 @@ def read_requests_csv(file_path):
     request_configs = []
     seen_keys = set()
 
-    with open(file_path, "r", newline="", encoding="utf-8") as csvfile:
+    with open(file_path, newline="", encoding="utf-8") as csvfile:
         reader = csv.DictReader(csvfile, delimiter=";")
         for row in reader:
             endpoint = (row.get("endpoint") or "").strip()
@@ -227,7 +227,7 @@ def load_state(path=None):
     """Load the persisted up/down state, returning an empty state on any error."""
     path = path or STATE_FILE
     try:
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
         return data if isinstance(data, dict) else {}
     except (FileNotFoundError, json.JSONDecodeError):
@@ -395,9 +395,11 @@ def probe_tls_expiry(url, timeout=None):
     port = parsed.port or 443
     context = ssl.create_default_context()
     try:
-        with socket.create_connection((host, port), timeout=timeout or REQUEST_TIMEOUT) as sock:
-            with context.wrap_socket(sock, server_hostname=host) as tls_sock:
-                cert = tls_sock.getpeercert()
+        with (
+            socket.create_connection((host, port), timeout=timeout or REQUEST_TIMEOUT) as sock,
+            context.wrap_socket(sock, server_hostname=host) as tls_sock,
+        ):
+            cert = tls_sock.getpeercert()
     except ssl.SSLCertVerificationError as exc:
         # An expired certificate cannot be read, because verifying it is what
         # fails - and that is the certificate most worth alerting on. OpenSSL
@@ -637,7 +639,7 @@ def execute_requests(config_path=None, state=None, dry_run=False):
 
     down = [
         config["project_name"]
-        for config, ok in zip(request_configs, results)
+        for config, ok in zip(request_configs, results, strict=True)
         if not ok
     ]
     if not dry_run:
